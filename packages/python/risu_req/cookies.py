@@ -3,8 +3,39 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Set, Union
 from urllib.parse import urlparse
+
+COMMON_PUBLIC_SUFFIXES: Set[str] = {
+    "com",
+    "org",
+    "net",
+    "edu",
+    "gov",
+    "mil",
+    "int",
+    "io",
+    "dev",
+    "app",
+    "co",
+    "biz",
+    "info",
+    "co.uk",
+    "org.uk",
+    "gov.uk",
+    "ac.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "co.jp",
+    "ne.jp",
+    "co.in",
+    "net.in",
+    "org.in",
+    "com.cn",
+    "net.cn",
+    "com.br",
+}
 
 
 @dataclass
@@ -154,7 +185,7 @@ def is_path_match(cookie_path: Optional[str], request_path: str) -> bool:
         return True
 
     if norm_req_path.startswith(norm_cookie_path):
-        if norm_cookie_path.endswith("/"):
+        if norm_cookie_path.endsWith("/") if hasattr(norm_cookie_path, "endsWith") else norm_cookie_path.endswith("/"):
             return True
         if norm_req_path[len(norm_cookie_path)] == "/":
             return True
@@ -187,6 +218,8 @@ class CookieJar:
 
         if entry.domain:
             norm_domain = entry.domain.lower()
+            if norm_domain in COMMON_PUBLIC_SUFFIXES:
+                return
             if not is_domain_match(norm_domain, request_host, False):
                 return
             if "." not in norm_domain and norm_domain != "localhost":

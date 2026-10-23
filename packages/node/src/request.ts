@@ -494,6 +494,7 @@ export async function executeRequestPipeline(
   const followRedirects = options.followRedirects ?? clientOptions.followRedirects ?? true;
   const maxRedirects = options.maxRedirects ?? clientOptions.maxRedirects ?? 10;
   const retryPolicy = normalizeRetryOptions(options.retries ?? clientOptions.retries);
+  const enableSsrf = options.ssrfProtection ?? clientOptions.ssrfProtection ?? false;
 
   const mergedHeaders: Record<string, string> = {
     accept: "*/*",
@@ -582,6 +583,10 @@ export async function executeRequestPipeline(
 
           const rawLocation = response.headers["location"]!;
           const nextUrl = validateAndParseUrl(rawLocation, activeUrl.toString());
+
+          if (enableSsrf) {
+            await verifySsrfSafety(nextUrl.hostname);
+          }
 
           activeHeaders = sanitizeRedirectHeaders(activeHeaders, activeUrl, nextUrl);
 

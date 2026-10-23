@@ -19,9 +19,8 @@ function inIpv4Range(targetInt: number, baseIp: string, prefixLength: number): b
   return (targetInt & mask) === (baseInt & mask);
 }
 
-export function isPrivateIpv4(ip: string): boolean {
-  const targetInt = ipv4ToInt(ip);
-  if (targetInt === -1) {
+export function isPrivateIpv4Int(targetInt: number): boolean {
+  if (targetInt < 0 || targetInt > 0xffffffff) {
     return true;
   }
 
@@ -42,6 +41,14 @@ export function isPrivateIpv4(ip: string): boolean {
     inIpv4Range(targetInt, "240.0.0.0", 4) ||
     targetInt === 0xffffffff
   );
+}
+
+export function isPrivateIpv4(ip: string): boolean {
+  const targetInt = ipv4ToInt(ip);
+  if (targetInt === -1) {
+    return true;
+  }
+  return isPrivateIpv4Int(targetInt);
 }
 
 export function isPrivateIpv6(ip: string): boolean {
@@ -90,14 +97,40 @@ export function isPrivateIp(ip: string): boolean {
   if (version === 6) {
     return isPrivateIpv6(ip);
   }
+
+  if (/^\d+$/.test(ip)) {
+    const num = Number.parseInt(ip, 10);
+    if (!Number.isNaN(num) && num >= 0 && num <= 0xffffffff) {
+      return isPrivateIpv4Int(num >>> 0);
+    }
+  }
+
+  if (/^0x[0-9a-fA-F]+$/.test(ip)) {
+    const num = Number.parseInt(ip, 16);
+    if (!Number.isNaN(num) && num >= 0 && num <= 0xffffffff) {
+      return isPrivateIpv4Int(num >>> 0);
+    }
+  }
+
   return true;
 }
 
 export async function verifySsrfSafety(hostname: string): Promise<string> {
   const normalized = hostname.trim().toLowerCase();
 
-  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local")) {
+  if (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local") ||
+    normalized.endsWith(".internal")
+  ) {
     throw new SsrfError(`SSRF blocked host: ${hostname}`, hostname);
+  }
+
+  if (/^\d+$/.test(normalized) || /^0x[0-9a-fA-F]+$/.test(normalized)) {
+    if (isPrivateIp(normalized)) {
+      throw new SsrfError(`SSRF blocked alternate format IP: ${normalized}`, hostname, normalized);
+    }
   }
 
   const directIpType = isIP(normalized);

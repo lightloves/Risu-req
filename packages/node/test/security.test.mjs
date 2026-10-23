@@ -57,6 +57,8 @@ test("Security validation, SSRF protection, and sensitive header stripping", asy
 
   await t.test("SSRF private IP detection", () => {
     assert.strictEqual(isPrivateIp("127.0.0.1"), true);
+    assert.strictEqual(isPrivateIp("2130706433"), true);
+    assert.strictEqual(isPrivateIp("0x7f000001"), true);
     assert.strictEqual(isPrivateIp("10.0.0.1"), true);
     assert.strictEqual(isPrivateIp("172.16.0.5"), true);
     assert.strictEqual(isPrivateIp("172.31.255.255"), true);
@@ -78,7 +80,29 @@ test("Security validation, SSRF protection, and sensitive header stripping", asy
       async () => client.get("http://localhost:8080/test"),
       SsrfError
     );
+    await assert.rejects(
+      async () => client.get("http://2130706433:8080/test"),
+      SsrfError
+    );
     await client.close();
+  });
+
+  await t.test("SSRF protection blocks malicious redirect to internal IP", async () => {
+    const local = await createLocalTestServer();
+    const client = new RisuClient({ ssrfProtection: true });
+
+    try {
+      await assert.rejects(
+        async () =>
+          client.get(
+            `${local.baseUrl}/redirect-start?target=http://127.0.0.1:80/secret`
+          ),
+        SsrfError
+      );
+    } finally {
+      await client.close();
+      await local.close();
+    }
   });
 
   await t.test("Sensitive header stripping on cross-origin redirects", () => {

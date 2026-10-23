@@ -41,6 +41,15 @@ def test_domain_attribute_subdomain_matching():
     assert len(unrelated) == 0
 
 
+def test_public_suffix_cookie_injection_rejection():
+    jar = CookieJar()
+    jar.set_cookie("exploit=token; Domain=com; Path=/", "http://target.com")
+    assert len(jar.get_cookies("http://target.com")) == 0
+
+    jar.set_cookie("exploit=token; Domain=co.uk; Path=/", "http://target.co.uk")
+    assert len(jar.get_cookies("http://target.co.uk")) == 0
+
+
 def test_path_matching_rules():
     jar = CookieJar()
     jar.set_cookie("auth=ok; Path=/app", "http://example.com")

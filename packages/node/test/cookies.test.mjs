@@ -34,6 +34,15 @@ test("Standards-compliant CookieJar unit and integration tests", async (t) => {
     assert.strictEqual(unrelated.length, 0);
   });
 
+  await t.test("Public suffix cookie injection rejection", () => {
+    const jar = new CookieJar();
+    jar.setCookie("exploit=token; Domain=com; Path=/", "http://target.com");
+    assert.strictEqual(jar.getCookies("http://target.com").length, 0);
+
+    jar.setCookie("exploit=token; Domain=co.uk; Path=/", "http://target.co.uk");
+    assert.strictEqual(jar.getCookies("http://target.co.uk").length, 0);
+  });
+
   await t.test("Path matching precision", () => {
     const jar = new CookieJar();
     jar.setCookie("scoped=secret; Path=/app", "http://example.com");

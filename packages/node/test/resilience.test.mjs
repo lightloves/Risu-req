@@ -64,6 +64,21 @@ test("Resilience, retries, timeouts, cancellation, and resource limit tests", as
     await client.close();
   });
 
+  await t.test("Premature truncation detection against Content-Length", async () => {
+    const client = new RisuClient();
+    try {
+      await assert.rejects(
+        async () => {
+          const res = await client.get(`${local.baseUrl}/truncated`);
+          await res.bytes();
+        },
+        (err) => err instanceof Error
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
   await t.test("Automatic retries on transient 503 error", async () => {
     const client = new RisuClient();
     const uniqueKey = `key_${Date.now()}`;

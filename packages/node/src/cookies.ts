@@ -1,5 +1,36 @@
 import type { CookieEntry, CookieJarLike } from "./types.js";
 
+const COMMON_PUBLIC_SUFFIXES = new Set([
+  "com",
+  "org",
+  "net",
+  "edu",
+  "gov",
+  "mil",
+  "int",
+  "io",
+  "dev",
+  "app",
+  "co",
+  "biz",
+  "info",
+  "co.uk",
+  "org.uk",
+  "gov.uk",
+  "ac.uk",
+  "com.au",
+  "net.au",
+  "org.au",
+  "co.jp",
+  "ne.jp",
+  "co.in",
+  "net.in",
+  "org.in",
+  "com.cn",
+  "net.cn",
+  "com.br",
+]);
+
 function parseSetCookieString(headerValue: string): CookieEntry | null {
   const parts = headerValue.split(";").map((part) => part.trim());
   if (parts.length === 0 || parts[0] === "") {
@@ -159,6 +190,9 @@ export class CookieJar implements CookieJarLike {
     const hostOnly = !entry.domain;
     if (entry.domain) {
       const normalizedDomain = entry.domain.toLowerCase();
+      if (COMMON_PUBLIC_SUFFIXES.has(normalizedDomain)) {
+        return;
+      }
       if (!isDomainMatch(normalizedDomain, requestHost, false)) {
         return;
       }

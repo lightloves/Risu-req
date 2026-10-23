@@ -9,7 +9,23 @@ def is_private_ip(ip_str: str) -> bool:
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
-        return True
+        try:
+            if ip_str.isdigit():
+                num = int(ip_str)
+                if 0 <= num <= 0xFFFFFFFF:
+                    ip = ipaddress.IPv4Address(num)
+                else:
+                    return True
+            elif ip_str.lower().startswith("0x"):
+                num = int(ip_str, 16)
+                if 0 <= num <= 0xFFFFFFFF:
+                    ip = ipaddress.IPv4Address(num)
+                else:
+                    return True
+            else:
+                return True
+        except Exception:
+            return True
 
     if (
         ip.is_private
@@ -47,8 +63,17 @@ def verify_ssrf_safety(hostname: str) -> str:
         normalized == "localhost"
         or normalized.endswith(".localhost")
         or normalized.endswith(".local")
+        or normalized.endswith(".internal")
     ):
         raise SsrfError(f"SSRF blocked host: {hostname}", host=hostname)
+
+    if normalized.isdigit() or normalized.startswith("0x"):
+        if is_private_ip(normalized):
+            raise SsrfError(
+                f"SSRF blocked alternate IP: {normalized}",
+                host=hostname,
+                resolved_address=normalized,
+            )
 
     try:
         ip = ipaddress.ip_address(normalized)

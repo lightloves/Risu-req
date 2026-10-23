@@ -27,6 +27,13 @@ def test_response_size_limit(local_server):
             res.bytes()
 
 
+def test_premature_truncation(local_server):
+    with risu_req.RisuClient() as client:
+        with pytest.raises(Exception):
+            res = client.get(f"{local_server.url}/truncated")
+            res.bytes()
+
+
 def test_automatic_retries_on_503(local_server):
     unique_key = f"py_flaky_{time.time()}"
     with risu_req.RisuClient(retries={"max_retries": 3, "backoff_factor": 0.05}) as client:

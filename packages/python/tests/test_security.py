@@ -48,6 +48,8 @@ def test_is_private_ip():
     assert is_private_ip("172.16.5.10") is True
     assert is_private_ip("192.168.1.1") is True
     assert is_private_ip("169.254.1.1") is True
+    assert is_private_ip("2130706433") is True
+    assert is_private_ip("0x7f000001") is True
     assert is_private_ip("::1") is True
     assert is_private_ip("fc00::1") is True
     assert is_private_ip("8.8.8.8") is False
@@ -61,6 +63,17 @@ def test_ssrf_protection_blocks_private():
 
         with pytest.raises(SsrfError):
             client.get("http://localhost:8080/test")
+
+        with pytest.raises(SsrfError):
+            client.get("http://2130706433:8080/test")
+
+
+def test_ssrf_protection_blocks_malicious_redirect(local_server):
+    with risu_req.RisuClient(ssrf_protection=True) as client:
+        with pytest.raises(SsrfError):
+            client.get(
+                f"{local_server.url}/redirect-start?target=http://127.0.0.1:80/secret"
+            )
 
 
 def test_cross_origin_redirect_header_stripping():

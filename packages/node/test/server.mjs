@@ -160,6 +160,16 @@ export function createLocalTestServer() {
       return;
     }
 
+    if (url.pathname === "/truncated") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": "1000",
+      });
+      res.write("short body");
+      res.destroy();
+      return;
+    }
+
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
   });

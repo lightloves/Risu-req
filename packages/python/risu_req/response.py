@@ -1,7 +1,6 @@
-import gzip
 import json
 import zlib
-from typing import Any, Dict, Generator, Iterator, Optional, Union
+from typing import Any, Dict, Generator, Iterator, List, Optional
 from risu_req.errors import ProtocolError, ResponseSizeLimitError
 
 
@@ -44,6 +43,7 @@ class RisuResponse:
         raw_stream: Iterator[bytes],
         max_response_size: Optional[int] = None,
         decompress: bool = True,
+        method: str = "GET",
     ) -> None:
         self.status_code = status_code
         self.status = status_code
@@ -52,6 +52,7 @@ class RisuResponse:
         self.headers = CaseInsensitiveDict(headers)
         self.url = url
         self.ok = 200 <= status_code < 300
+        self.method = method
 
         self._raw_stream = raw_stream
         self._max_response_size = max_response_size
@@ -60,52 +61,111 @@ class RisuResponse:
         self._cached_content: Optional[bytes] = None
 
     def stream(self, chunk_size: int = 8192) -> Generator[bytes, None, None]:
-        """Yield response body in chunks while enforcing size limits."""
+        """Yield response body in chunks while enforcing size and decompression limits."""
         if self._body_consumed:
             raise ProtocolError("Response body has already been consumed")
         self._body_consumed = True
 
+        encoding = self.headers.get("content-encoding", "").strip().lower()
+        decompressor = None
+        if self._decompress and encoding:
+            if encoding == "gzip":
+                decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            elif encoding == "deflate":
+                decompressor = zlib.decompressobj(zlib.MAX_WBITS)
+
         received_bytes = 0
-        raw_chunks: List[bytes] = []
+        decoded_chunks: List[bytes] = []
 
         for chunk in self._raw_stream:
             if not chunk:
                 continue
-            received_bytes += len(chunk)
-            if self._max_response_size and received_bytes > self._max_response_size:
-                raise ResponseSizeLimitError(
-                    f"Response exceeded maximum size limit of {self._max_response_size} bytes",
-                    max_bytes=self._max_response_size,
-                    received_bytes=received_bytes,
-                    url=self.url,
-                    status_code=self.status_code,
-                )
-            raw_chunks.append(chunk)
 
-        full_payload = b"".join(raw_chunks)
-
-        if self._decompress:
-            encoding = self.headers.get("content-encoding", "").strip().lower()
-            if encoding == "gzip":
+            if decompressor:
                 try:
-                    full_payload = gzip.decompress(full_payload)
-                except Exception:
-                    pass
-            elif encoding == "deflate":
-                try:
-                    full_payload = zlib.decompress(full_payload)
+                    decompressed = decompressor.decompress(chunk)
                 except Exception:
                     try:
-                        full_payload = zlib.decompress(full_payload, -zlib.MAX_WBITS)
+                        decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+                        decompressed = decompressor.decompress(chunk)
                     except Exception:
-                        pass
-            elif encoding == "br":
-                try:
-                    import brotli
+                        decompressed = chunk
 
-                    full_payload = brotli.decompress(full_payload)
-                except Exception:
-                    pass
+                if decompressed:
+                    received_bytes += len(decompressed)
+                    if self._max_response_size and received_bytes > self._max_response_size:
+                        raise ResponseSizeLimitError(
+                            f"Response exceeded maximum decompressed limit of {self._max_response_size} bytes",
+                            max_bytes=self._max_response_size,
+                            received_bytes=received_bytes,
+                            url=self.url,
+                            status_code=self.status_code,
+                        )
+                    decoded_chunks.append(decompressed)
+            else:
+                received_bytes += len(chunk)
+                if self._max_response_size and received_bytes > self._max_response_size:
+                    raise ResponseSizeLimitError(
+                        f"Response exceeded maximum size limit of {self._max_response_size} bytes",
+                        max_bytes=self._max_response_size,
+                        received_bytes=received_bytes,
+                        url=self.url,
+                        status_code=self.status_code,
+                    )
+                decoded_chunks.append(chunk)
+
+        if decompressor:
+            try:
+                flush_tail = decompressor.flush()
+                if flush_tail:
+                    received_bytes += len(flush_tail)
+                    if self._max_response_size and received_bytes > self._max_response_size:
+                        raise ResponseSizeLimitError(
+                            f"Response exceeded maximum decompressed limit of {self._max_response_size} bytes",
+                            max_bytes=self._max_response_size,
+                            received_bytes=received_bytes,
+                            url=self.url,
+                            status_code=self.status_code,
+                        )
+                    decoded_chunks.append(flush_tail)
+            except Exception:
+                pass
+
+        full_payload = b"".join(decoded_chunks)
+
+        if self._decompress and encoding == "br":
+            try:
+                import brotli
+
+                full_payload = brotli.decompress(full_payload)
+                if self._max_response_size and len(full_payload) > self._max_response_size:
+                    raise ResponseSizeLimitError(
+                        f"Response exceeded maximum decompressed limit of {self._max_response_size} bytes",
+                        max_bytes=self._max_response_size,
+                        received_bytes=len(full_payload),
+                        url=self.url,
+                        status_code=self.status_code,
+                    )
+            except Exception:
+                pass
+
+        is_body_forbidden = (
+            self.status_code in (204, 304)
+            or (100 <= self.status_code < 200)
+            or self.method.upper() == "HEAD"
+        )
+        content_length_str = self.headers.get("content-length")
+        if content_length_str and not encoding and not is_body_forbidden:
+            try:
+                expected_len = int(content_length_str)
+                if len(full_payload) != expected_len:
+                    raise ProtocolError(
+                        f"Premature response end: expected {expected_len} bytes from Content-Length, received {len(full_payload)} bytes",
+                        url=self.url,
+                        status_code=self.status_code,
+                    )
+            except ValueError:
+                pass
 
         self._cached_content = full_payload
 

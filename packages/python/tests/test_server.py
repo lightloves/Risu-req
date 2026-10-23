@@ -180,6 +180,15 @@ class LocalHandler(http.server.BaseHTTPRequestHandler):
                 sent += to_send
             return
 
+        if path == "/truncated":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            self.wfile.write(b"short payload")
+            self.close_connection = True
+            return
+
         self.send_response(404)
         self.end_headers()
 

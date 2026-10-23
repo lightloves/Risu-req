@@ -11,6 +11,7 @@ export interface ResponseInit {
   rawStream: Readable;
   maxResponseSize?: number;
   decompress?: boolean;
+  method?: string;
 }
 
 export class RisuResponse {
@@ -22,6 +23,7 @@ export class RisuResponse {
   readonly rawHeaders: string[];
   readonly url: string;
   readonly ok: boolean;
+  readonly method?: string;
 
   private readonly rawStream: Readable;
   private readonly maxResponseSize?: number;
@@ -41,6 +43,7 @@ export class RisuResponse {
     this.rawStream = init.rawStream;
     this.maxResponseSize = init.maxResponseSize;
     this.shouldDecompress = init.decompress ?? true;
+    this.method = init.method;
   }
 
   stream(): Readable {
@@ -50,6 +53,20 @@ export class RisuResponse {
     this.bodyUsed = true;
 
     let currentStream = this.rawStream;
+    const contentEncoding = (this.headers["content-encoding"] || "").trim().toLowerCase();
+
+    if (this.shouldDecompress && contentEncoding) {
+      if (contentEncoding === "gzip") {
+        const gunzip = zlib.createGunzip();
+        currentStream = currentStream.pipe(gunzip);
+      } else if (contentEncoding === "deflate") {
+        const inflate = zlib.createInflate();
+        currentStream = currentStream.pipe(inflate);
+      } else if (contentEncoding === "br") {
+        const brotli = zlib.createBrotliDecompress();
+        currentStream = currentStream.pipe(brotli);
+      }
+    }
 
     if (this.maxResponseSize !== undefined && this.maxResponseSize > 0) {
       let receivedBytes = 0;
@@ -73,20 +90,6 @@ export class RisuResponse {
       currentStream = currentStream.pipe(sizeLimiter);
     }
 
-    if (this.shouldDecompress) {
-      const contentEncoding = (this.headers["content-encoding"] || "").trim().toLowerCase();
-      if (contentEncoding === "gzip") {
-        const gunzip = zlib.createGunzip();
-        currentStream = currentStream.pipe(gunzip);
-      } else if (contentEncoding === "deflate") {
-        const inflate = zlib.createInflate();
-        currentStream = currentStream.pipe(inflate);
-      } else if (contentEncoding === "br") {
-        const brotli = zlib.createBrotliDecompress();
-        currentStream = currentStream.pipe(brotli);
-      }
-    }
-
     return currentStream;
   }
 
@@ -97,6 +100,16 @@ export class RisuResponse {
 
     const readable = this.stream();
     const chunks: Buffer[] = [];
+    const expectedLengthStr = this.headers["content-length"];
+    const contentEncoding = (this.headers["content-encoding"] || "").trim();
+    const expectedLength =
+      expectedLengthStr && !contentEncoding ? Number.parseInt(expectedLengthStr, 10) : null;
+
+    const isBodyForbidden =
+      this.statusCode === 204 ||
+      this.statusCode === 304 ||
+      (this.statusCode >= 100 && this.statusCode < 200) ||
+      (this.method && this.method.toUpperCase() === "HEAD");
 
     return new Promise<Buffer>((resolve, reject) => {
       readable.on("data", (chunk: Buffer) => {
@@ -104,6 +117,20 @@ export class RisuResponse {
       });
       readable.on("end", () => {
         this.cachedBuffer = Buffer.concat(chunks);
+        if (
+          !isBodyForbidden &&
+          expectedLength !== null &&
+          !Number.isNaN(expectedLength) &&
+          this.cachedBuffer.length !== expectedLength
+        ) {
+          reject(
+            new ProtocolError(
+              `Premature response end: expected ${expectedLength} bytes from Content-Length, received ${this.cachedBuffer.length} bytes`,
+              { url: this.url, statusCode: this.statusCode }
+            )
+          );
+          return;
+        }
         resolve(this.cachedBuffer);
       });
       readable.on("error", (error) => {

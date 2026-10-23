@@ -408,6 +408,11 @@ class RisuClient:
 
                         raw_location = resp_headers["location"]
                         next_url = validate_url(raw_location, current_url)
+
+                        if enforce_ssrf:
+                            next_host = urllib.parse.urlparse(next_url).hostname or ""
+                            verify_ssrf_safety(next_host)
+
                         current_headers = sanitize_redirect_headers(
                             current_headers, current_url, next_url
                         )
@@ -473,6 +478,7 @@ class RisuClient:
                         raw_stream=resp.stream(amt=8192),
                         max_response_size=effective_max_size,
                         decompress=decompress,
+                        method=current_method,
                     )
                     return risu_response
 
