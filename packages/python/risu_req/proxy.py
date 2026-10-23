@@ -21,6 +21,16 @@ class ProxyConfig:
     auth: Optional[ProxyAuth] = None
     bypass: List[str] = field(default_factory=list)
 
+    @property
+    def host(self) -> str:
+        """Target hostname of proxy server."""
+        return urlparse(self.url).hostname or ""
+
+    @property
+    def port(self) -> Optional[int]:
+        """Target port of proxy server."""
+        return urlparse(self.url).port
+
 
 def redact_proxy_url(url_or_config: Union[str, ProxyConfig, Dict[str, Any]]) -> str:
     """Remove sensitive password credentials from proxy URL for safe logging."""

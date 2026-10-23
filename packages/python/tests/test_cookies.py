@@ -86,3 +86,16 @@ def test_client_cookie_integration(local_server):
         rec = r2.json()["receivedCookie"]
         assert "session_id=py123xyz" in rec
         assert "theme=light" in rec
+        assert client.cookies is not None
+        assert client.cookies.get("session_id") == "py123xyz"
+        dict_view = client.cookies.get_dict()
+        assert dict_view.get("theme") == "light"
+
+
+def test_cookie_jar_dict_helpers():
+    jar = CookieJar()
+    jar.set("auth_token", "secret456", domain="discord.com")
+    assert jar.get("auth_token") == "secret456"
+    assert jar.get("nonexistent", "default_val") == "default_val"
+    dict_all = jar.get_dict()
+    assert dict_all["auth_token"] == "secret456"

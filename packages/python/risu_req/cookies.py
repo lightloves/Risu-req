@@ -291,6 +291,37 @@ class CookieJar:
         cookies = self.get_cookies(url)
         return "; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies)
 
+    def get_dict(self, url: Optional[str] = None) -> Dict[str, str]:
+        """Return dictionary mapping cookie names to values."""
+        if url:
+            return {cookie.name: cookie.value for cookie in self.get_cookies(url)}
+        return {entry.name: entry.value for entry in self._store.values()}
+
+    def get(self, name: str, default: Optional[str] = None) -> Optional[str]:
+        """Retrieve cookie value by name."""
+        for entry in self._store.values():
+            if entry.name == name:
+                return entry.value
+        return default
+
+    def set(
+        self,
+        name: str,
+        value: str,
+        domain: Optional[str] = None,
+        path: str = "/",
+    ) -> None:
+        """Store or update a cookie key-value pair."""
+        entry = CookieEntry(
+            name=name,
+            value=value,
+            domain=domain,
+            path=path,
+            creation_time=time.time(),
+        )
+        key = f"{domain or '*'}:{path}:{name}"
+        self._store[key] = entry
+
     def clear(self) -> None:
         """Purge all stored cookies."""
         self._store.clear()

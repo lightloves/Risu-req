@@ -101,3 +101,47 @@ The built-in `CookieJar` strictly enforces RFC 6265:
 
 3. **Bypass Rules (`NO_PROXY`)**:
    - Supports wildcards (`*`), exact hostnames (`localhost`, `127.0.0.1`), domain suffixes (`.corp.internal`, `*.lan`), and specific ports (`example.com:8080`).
+
+---
+
+## Rate Limiting & Retry Management
+
+1. **Header Detection & Parsing**:
+   - Detects HTTP 429 Too Many Requests and HTTP 503 with rate limit headers.
+   - Parses standard RFC 7231 `Retry-After` headers in both decimal seconds (e.g. `2.5`) and HTTP-date formats (`Wed, 21 Oct 2026 07:28:00 GMT`).
+   - Parses draft IETF and vendor headers: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `X-RateLimit-*`, and scopes (`user`, `ip`, `app`).
+   - Exposes structured rate limit info directly on response objects (`response.isRateLimited`, `response.retryAfter`, `response.rateLimit`).
+
+2. **Bounded Exponential Backoff with Jitter**:
+   - Formula: `delay = min(max_delay, min(backoff_factor * 2^attempt, max_delay) * rand(0.5, 1.0))` (Full Jitter).
+   - When `Retry-After` header is present, it takes precedence over exponential calculation, clamped to `max_delay`.
+
+3. **Idempotency & Replay Safety**:
+   - Automatic retries are restricted to idempotent methods (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`) unless explicitly configured.
+   - Non-replayable request body streams (Node `Readable`, Python file-like objects or generators) are detected; if consumed, unsafe automatic retries are prevented to avoid data corruption or duplicate mutation.
+
+---
+
+## Connection Lifecycle & Keep-Alive Pooling
+
+1. **Keep-Alive Socket Reuse**:
+   - Persistent connection pools maintain idle sockets up to `maxSockets` / `max_connections`.
+   - On redirects and retry loops, response socket bodies are automatically drained (`drain()`) before re-issuing requests.
+   - When handling 429 rate limit responses or error responses where user code does not consume the response stream, `close()` and `drain()` drain unconsumed bytes and return the underlying TCP connection to the pool rather than abandoning the socket.
+   - Prevents socket exhaustion, file descriptor leaks, and false-positive burst rate limits caused by excessive TCP handshakes.
+
+2. **Redirect Header Sanitization**:
+   - On redirect across different origins, sensitive authentication headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are stripped.
+   - Safe scheme upgrades (`http://` to `https://` on the same host and default/explicit port) preserve authentication credentials identically to `curl`.
+
+---
+
+## Concurrency Limiting & Diagnostics
+
+1. **Concurrency Throttling**:
+   - Both Node.js and Python clients provide configurable concurrency limits via an internal semaphore queue (`concurrency: N`).
+   - Prevents burst traffic from overwhelming target servers and triggering rate limits.
+
+2. **Secret Redaction & Clear Diagnostics**:
+   - Structured logs redact sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `X-Api-Key`, `api_key`, `token`, `secret`) and query parameters (`token`, `api_key`, `password`, `secret`, `access_token`).
+   - `response.diagnostics()` returns comprehensive structured metadata indicating the root cause (e.g. rate limited, unauthorized, auth stripped on redirect, server error) with actionable explanations instead of guesswork.

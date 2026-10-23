@@ -1,7 +1,8 @@
 import json
 import zlib
-from typing import Any, Dict, Generator, Iterator, List, Optional
+from typing import Any, Callable, Dict, Generator, Iterator, List, Optional
 from risu_req.errors import ProtocolError, ResponseSizeLimitError
+from risu_req.retry import RateLimitInfo, parse_rate_limit_headers, parse_retry_after
 
 
 class CaseInsensitiveDict(dict):
@@ -44,6 +45,11 @@ class RisuResponse:
         max_response_size: Optional[int] = None,
         decompress: bool = True,
         method: str = "GET",
+        redirect_hops: int = 0,
+        authenticated: bool = False,
+        cookies_sent: bool = False,
+        release_conn: Optional[Callable[[], None]] = None,
+        resp_obj: Optional[Any] = None,
     ) -> None:
         self.status_code = status_code
         self.status = status_code
@@ -53,12 +59,18 @@ class RisuResponse:
         self.url = url
         self.ok = 200 <= status_code < 300
         self.method = method
+        self.redirect_hops = redirect_hops
+        self.authenticated = authenticated
+        self.cookies_sent = cookies_sent
 
         self._raw_stream = raw_stream
         self._max_response_size = max_response_size
         self._decompress = decompress
         self._body_consumed = False
         self._cached_content: Optional[bytes] = None
+        self._release_conn = release_conn
+        self._resp_obj = resp_obj
+        self._rate_limit_info: Optional[RateLimitInfo] = None
 
     def stream(self, chunk_size: int = 8192) -> Generator[bytes, None, None]:
         """Yield response body in chunks while enforcing size and decompression limits."""
@@ -203,3 +215,85 @@ class RisuResponse:
                 status_code=self.status_code,
                 cause=exc,
             )
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Indicate whether this response was rate-limited by status 429 or 503 Retry-After."""
+        return self.status_code == 429 or (
+            self.status_code == 503 and bool(self.headers.get("retry-after"))
+        )
+
+    @property
+    def retry_after(self) -> Optional[float]:
+        """Parsed delay in seconds from the Retry-After header, if present."""
+        raw = self.headers.get("retry-after")
+        if not raw:
+            return None
+        return parse_retry_after(raw)
+
+    @property
+    def rate_limit(self) -> Optional[RateLimitInfo]:
+        """Detailed rate limit metadata parsed from standard response headers."""
+        if self._rate_limit_info is None:
+            self._rate_limit_info = parse_rate_limit_headers(
+                self.headers, self.status_code
+            )
+        return self._rate_limit_info
+
+    def close(self) -> None:
+        """Release underlying socket connection back to pool after draining unread data."""
+        if self._resp_obj is not None:
+            try:
+                if not self._body_consumed and hasattr(self._resp_obj, "drain_conn"):
+                    self._resp_obj.drain_conn()
+                if hasattr(self._resp_obj, "release_conn"):
+                    self._resp_obj.release_conn()
+            except Exception:
+                pass
+            self._resp_obj = None
+        elif self._release_conn:
+            try:
+                self._release_conn()
+            except Exception:
+                pass
+            self._release_conn = None
+
+    def __enter__(self) -> "RisuResponse":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def diagnostics(self) -> Dict[str, Any]:
+        """Return structured diagnostic details identifying status and rate limiting root cause."""
+        rate_info = self.rate_limit
+        is_rl = self.is_rate_limited
+
+        cause = "Request completed normally"
+        if is_rl:
+            if rate_info and rate_info.retry_after is not None:
+                cause = (
+                    f"Rate limit exceeded (HTTP {self.status_code}). "
+                    f"Server requested Retry-After {rate_info.retry_after}s."
+                )
+            elif rate_info and rate_info.remaining == 0:
+                cause = (
+                    f"Rate limit quota exhausted (HTTP {self.status_code}). "
+                    f"Remaining quota is 0."
+                )
+            else:
+                cause = f"Rate limit exceeded (HTTP {self.status_code} Too Many Requests)."
+        elif self.status_code >= 400:
+            cause = f"HTTP request failed with status {self.status_code} {self.reason}"
+
+        return {
+            "status_code": self.status_code,
+            "url": self.url,
+            "method": self.method,
+            "is_rate_limited": is_rl,
+            "rate_limit": rate_info,
+            "authenticated": self.authenticated,
+            "cookies_sent": self.cookies_sent,
+            "redirect_count": self.redirect_hops,
+            "cause": cause,
+        }

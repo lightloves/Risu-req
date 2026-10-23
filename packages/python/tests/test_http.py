@@ -103,3 +103,13 @@ def test_transparent_deflate(local_server):
     assert res.status_code == 200
     data = res.json()
     assert data["message"] == "python deflate payload"
+
+
+def test_session_alias_and_properties(local_server):
+    sess = risu_req.Session()
+    sess.headers.update({"X-Custom-Client": "risu-integration"})
+    sess.proxies = {"http": "http://127.0.0.1:8080"}
+    assert sess.headers["X-Custom-Client"] == "risu-integration"
+    assert sess.proxies is not None
+    assert sess.proxies.port == 8080
+    sess.close()

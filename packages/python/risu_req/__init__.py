@@ -26,18 +26,22 @@ from risu_req.errors import (
 )
 from risu_req.proxy import ProxyAuth, ProxyConfig
 from risu_req.response import CaseInsensitiveDict, RisuResponse
-from risu_req.retry import RetryPolicy
+from risu_req.retry import RateLimitInfo, RetryPolicy
+
+Session = RisuClient
 
 __version__ = "1.0.0"
 
 __all__ = [
     "RisuClient",
+    "Session",
     "RisuResponse",
     "CookieJar",
     "CookieEntry",
     "ProxyConfig",
     "ProxyAuth",
     "RetryPolicy",
+    "RateLimitInfo",
     "CaseInsensitiveDict",
     "RisuError",
     "DnsError",

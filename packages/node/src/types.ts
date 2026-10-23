@@ -51,6 +51,7 @@ export interface PoolOptions {
   maxFreeSockets?: number;
   idleTimeout?: number;
   keepAlive?: boolean;
+  concurrency?: number;
 }
 
 export interface TlsOptions {
@@ -59,6 +60,28 @@ export interface TlsOptions {
   key?: string | Buffer;
   rejectUnauthorized?: boolean;
   servername?: string;
+}
+
+export interface RateLimitInfo {
+  isRateLimited: boolean;
+  retryAfter?: number; // seconds
+  limit?: number;
+  remaining?: number;
+  reset?: number; // timestamp in seconds or milliseconds
+  resetAfter?: number; // seconds
+  scope?: string;
+}
+
+export interface DiagnosticsInfo {
+  statusCode: number;
+  url: string;
+  method: string;
+  isRateLimited: boolean;
+  rateLimit?: RateLimitInfo | null;
+  authenticated: boolean;
+  cookiesSent: boolean;
+  redirectCount: number;
+  cause: string;
 }
 
 export interface RequestLogInfo {
@@ -75,6 +98,7 @@ export interface ResponseLogInfo {
   statusText: string;
   headers: Record<string, string>;
   durationMs: number;
+  rateLimit?: RateLimitInfo | null;
 }
 
 export interface ErrorLogInfo {
@@ -91,6 +115,7 @@ export interface RetryLogInfo {
   maxRetries: number;
   delayMs: number;
   reason: string;
+  rateLimit?: RateLimitInfo | null;
 }
 
 export interface LoggingHooks {
@@ -121,6 +146,7 @@ export interface ClientOptions {
   maxRedirects?: number;
   followRedirects?: boolean;
   logging?: LoggingHooks;
+  concurrency?: number;
 }
 
 export interface RequestOptions {
@@ -143,6 +169,7 @@ export interface RequestOptions {
   ssrfProtection?: boolean;
   decompress?: boolean;
   validateStatus?: (status: number) => boolean;
+  concurrency?: number;
 }
 
 export interface CookieEntry {

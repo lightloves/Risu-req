@@ -11,17 +11,24 @@ SENSITIVE_HEADER_NAMES = {
     "x-api-key",
     "api-key",
     "x-auth-token",
+    "bearer",
+    "token",
+    "x-access-token",
+    "x-secret-key",
+    "client-secret",
 }
 
 SENSITIVE_PARAM_NAMES = {
     "token",
     "secret",
     "password",
+    "passwd",
     "api_key",
     "apikey",
     "key",
     "access_token",
     "auth",
+    "client_secret",
 }
 
 
@@ -85,10 +92,29 @@ def sanitize_redirect_headers(
 
     result = dict(headers)
 
-    from_origin = (from_parsed.scheme.lower(), from_parsed.hostname, from_parsed.port)
-    to_origin = (to_parsed.scheme.lower(), to_parsed.hostname, to_parsed.port)
+    from_scheme = from_parsed.scheme.lower()
+    to_scheme = to_parsed.scheme.lower()
+    from_host = (from_parsed.hostname or "").lower()
+    to_host = (to_parsed.hostname or "").lower()
 
-    if from_origin != to_origin:
+    from_port = from_parsed.port or (443 if from_scheme == "https" else 80)
+    to_port = to_parsed.port or (443 if to_scheme == "https" else 80)
+
+    is_same_host = from_host == to_host
+    is_https_upgrade = from_scheme == "http" and to_scheme == "https"
+    is_port_compatible = (
+        ((from_port == 80 and to_port == 443) or from_port == to_port)
+        if is_https_upgrade
+        else from_port == to_port
+    )
+
+    is_cross_domain = (
+        not is_same_host
+        or (not is_https_upgrade and (from_scheme, from_host, from_port) != (to_scheme, to_host, to_port))
+        or not is_port_compatible
+    )
+
+    if is_cross_domain:
         result.pop("authorization", None)
         result.pop("Authorization", None)
         result.pop("proxy-authorization", None)

@@ -6,7 +6,7 @@ Complete documentation for the Python implementation of `risu-req`.
 
 ```python
 import risu_req
-from risu_req import RisuClient, CookieJar, get, post, put, patch, delete, head, options
+from risu_req import RisuClient, CookieJar, RateLimitInfo, get, post, put, patch, delete, head, options
 ```
 
 ---
@@ -42,6 +42,7 @@ with RisuClient(
     headers={"User-Agent": "my-app/1.0", "X-Api-Key": "secret"},
     timeout={"connect": 3.0, "read": 10.0, "total": 15.0},
     cookies=True,
+    concurrency=10,
     proxy="http://user:pass@proxy.corp:8080",
     retries={"max_retries": 3, "backoff_factor": 0.3, "retry_after": True},
     pool={"max_connections": 64},
@@ -79,12 +80,15 @@ with RisuClient(
 - `max_response_size`: Maximum allowed incoming body bytes.
 - `max_redirects`: Maximum allowed redirects (default: 10).
 - `follow_redirects`: Boolean (default: True).
+- `concurrency`: Optional integer bounding concurrent active requests through a Semaphore.
 - `ssrf_protection`: Boolean enabling private IP check.
 - `decompress`: Boolean enabling transparent gzip/deflate/brotli decoding (default: True).
 
 ---
 
 ## `RisuResponse` Class
+
+Supports context manager (`with client.get(...) as resp:`):
 
 - `status_code` / `status`: Integer status code.
 - `reason` / `status_text`: String status message.
@@ -95,3 +99,8 @@ with RisuClient(
 - `text`: Property returning UTF-8 string.
 - `bytes()` / `content`: Method or property returning raw bytes.
 - `stream(chunk_size=8192)`: Generator yielding decoded bytes chunks.
+- `is_rate_limited`: Boolean indicating whether response was rate-limited (HTTP 429 or 503 with Retry-After).
+- `retry_after`: Float delay in seconds parsed from `Retry-After` header (None if absent).
+- `rate_limit`: `RateLimitInfo` dataclass containing parsed rate limit headers (`is_rate_limited`, `retry_after`, `limit`, `remaining`, `reset`, `reset_after`, `scope`).
+- `diagnostics()`: Returns structured dictionary describing request outcome, authentication status, rate limits, and clear diagnostic cause.
+- `close()` / `drain()`: Drains unread bytes from socket and releases connection back to keep-alive pool.

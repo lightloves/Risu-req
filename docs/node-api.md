@@ -54,6 +54,7 @@ const client = new RisuClient({
     total: 15000,  // Complete request-response timeout (ms)
   },
   cookies: true, // Enables default CookieJar
+  concurrency: 10, // Max concurrent in-flight requests (Semaphore)
   proxy: "http://user:pass@proxy.corp:8080",
   retries: {
     maxRetries: 3,
@@ -99,6 +100,7 @@ const client = new RisuClient({
 - `maxResponseSize`: Byte limit for response body.
 - `maxRedirects`: Maximum redirect hops (default: 10).
 - `followRedirects`: Boolean (default: true).
+- `concurrency`: Number bounding concurrent in-flight requests via semaphore queue.
 - `ssrfProtection`: Boolean to block internal IP destinations.
 - `decompress`: Boolean to automatically decompress gzip, deflate, and brotli (default: true).
 
@@ -115,4 +117,9 @@ const client = new RisuClient({
 - `text()`: Promise resolving response body as UTF-8 string.
 - `bytes()` / `buffer()`: Promise resolving raw response body as `Buffer`.
 - `stream()`: Returns `Readable` stream with backpressure and size limits applied.
+- `isRateLimited`: Boolean indicating whether response was rate-limited (HTTP 429 or 503 with Retry-After).
+- `retryAfter`: Number delay in seconds parsed from `Retry-After` header (null if absent).
+- `rateLimit`: Object containing parsed rate limit headers (`isRateLimited`, `retryAfter`, `limit`, `remaining`, `reset`, `resetAfter`, `scope`).
+- `diagnostics()`: Returns structured diagnostics describing request outcome, authentication status, rate limits, and clear cause explanation.
+- `drain()` / `close()`: Drains any unread stream data and releases keep-alive socket back to pool.
 - `getHeader(name)`: Case-insensitive header lookup.

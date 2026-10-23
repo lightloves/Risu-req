@@ -284,6 +284,49 @@ export class CookieJar implements CookieJarLike {
     return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
   }
 
+  get(name: string, defaultValue?: string): string | undefined {
+    for (const entry of this.store.values()) {
+      if (entry.name === name) {
+        if (entry.expires && entry.expires.getTime() <= Date.now()) {
+          continue;
+        }
+        return entry.value;
+      }
+    }
+    return defaultValue;
+  }
+
+  set(name: string, value: string, domain?: string, path = "/"): void {
+    const key = `${domain ?? "*"}:${path}:${name}`;
+    const stored: StoredCookie = {
+      name,
+      value,
+      domain,
+      path,
+      hostOnly: !domain,
+      creationTime: Date.now(),
+    };
+    this.store.set(key, stored);
+  }
+
+  getDict(url?: string | URL): Record<string, string> {
+    const result: Record<string, string> = {};
+    if (url) {
+      for (const cookie of this.getCookies(url)) {
+        result[cookie.name] = cookie.value;
+      }
+    } else {
+      const now = Date.now();
+      for (const entry of this.store.values()) {
+        if (entry.expires && entry.expires.getTime() <= now) {
+          continue;
+        }
+        result[entry.name] = entry.value;
+      }
+    }
+    return result;
+  }
+
   clear(): void {
     this.store.clear();
   }

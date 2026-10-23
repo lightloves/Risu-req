@@ -16,13 +16,23 @@ export class RisuClient {
 
   constructor(options: ClientOptions = {}) {
     this.options = { ...options };
-    this.pool = new ConnectionPool(options.pool, options.tls);
+    const poolOptions = { ...options.pool };
+    if (options.concurrency !== undefined && poolOptions.concurrency === undefined) {
+      poolOptions.concurrency = options.concurrency;
+    }
+    this.pool = new ConnectionPool(poolOptions, options.tls);
 
-    if (options.cookies === true) {
-      this.cookieJar = new CookieJar();
+    if (options.cookies === false) {
+      this.cookieJar = undefined;
     } else if (typeof options.cookies === "object" && options.cookies !== null) {
       this.cookieJar = options.cookies;
+    } else {
+      this.cookieJar = new CookieJar();
     }
+  }
+
+  get cookies(): CookieJarLike | undefined {
+    return this.cookieJar;
   }
 
   async request(url: string, options: RequestOptions = {}): Promise<RisuResponse> {

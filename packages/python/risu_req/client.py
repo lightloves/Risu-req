@@ -1,6 +1,7 @@
 import base64
 import json as _json
 import ssl
+import threading
 import time
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -33,12 +34,15 @@ from risu_req.proxy import (
 )
 from risu_req.response import CaseInsensitiveDict, RisuResponse
 from risu_req.retry import (
+    RateLimitInfo,
     RetryPolicy,
     calculate_retry_delay,
+    is_replayable_body,
     is_retryable_exception,
     is_retryable_method,
     is_retryable_status_code,
     normalize_retry_policy,
+    parse_rate_limit_headers,
 )
 from risu_req.security import (
     redact_headers_for_logging,
@@ -125,6 +129,7 @@ class RisuClient:
         max_redirects: int = 10,
         follow_redirects: bool = True,
         logging: Optional[Dict[str, Callable[..., None]]] = None,
+        concurrency: Optional[int] = None,
     ) -> None:
         self.base_url = base_url
         self.default_headers = dict(headers or {})
@@ -138,14 +143,20 @@ class RisuClient:
         self.max_redirects = max_redirects
         self.follow_redirects = follow_redirects
         self.logging = logging or {}
+        self.concurrency = concurrency
+        self._semaphore = (
+            threading.BoundedSemaphore(concurrency)
+            if concurrency and concurrency > 0
+            else None
+        )
         self.is_closed = False
 
-        if cookies is True:
-            self.cookie_jar: Optional[CookieJar] = CookieJar()
+        if cookies is False:
+            self.cookie_jar = None
         elif isinstance(cookies, CookieJar):
             self.cookie_jar = cookies
         else:
-            self.cookie_jar = None
+            self.cookie_jar = CookieJar()
 
         maxsize = self.pool_config.get("max_connections", 64)
         cert_reqs = (
@@ -168,6 +179,48 @@ class RisuClient:
         )
 
         self._proxy_managers: Dict[str, urllib3.ProxyManager] = {}
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Dictionary of default headers sent with each request."""
+        return self.default_headers
+
+    @headers.setter
+    def headers(self, value: Dict[str, str]) -> None:
+        self.default_headers = dict(value)
+
+    @property
+    def cookies(self) -> CookieJar:
+        """Cookie jar associated with this client instance."""
+        if self.cookie_jar is None:
+            self.cookie_jar = CookieJar()
+        return self.cookie_jar
+
+    @cookies.setter
+    def cookies(self, value: Union[CookieJar, Dict[str, str], None]) -> None:
+        if isinstance(value, CookieJar):
+            self.cookie_jar = value
+        elif isinstance(value, dict):
+            self.cookie_jar = CookieJar()
+            for k, v in value.items():
+                self.cookie_jar.set(k, v)
+        elif value is None or value is False:
+            self.cookie_jar = None
+        else:
+            self.cookie_jar = CookieJar()
+
+    @property
+    def proxies(self) -> Any:
+        """Configured proxy target."""
+        return self.proxy
+
+    @proxies.setter
+    def proxies(self, value: Any) -> None:
+        if isinstance(value, dict):
+            proxy_url = value.get("https") or value.get("http")
+            self.proxy = parse_proxy_config(proxy_url) if proxy_url else None
+        else:
+            self.proxy = parse_proxy_config(value) if value else None
 
     def _get_timeout(
         self, req_timeout: Union[float, Dict[str, float], None]
@@ -225,13 +278,86 @@ class RisuClient:
         max_response_size: Optional[int] = None,
         max_redirects: Optional[int] = None,
         follow_redirects: Optional[bool] = None,
+        allow_redirects: Optional[bool] = None,
+        proxies: Union[str, ProxyConfig, dict, bool, None] = None,
         ssrf_protection: Optional[bool] = None,
         decompress: bool = True,
+        concurrency: Optional[int] = None,
     ) -> RisuResponse:
         """Execute an HTTP request with retries, pooling, cookie management, and redirects."""
         if self.is_closed:
             raise RisuError("RisuClient has been closed")
 
+        if follow_redirects is None and allow_redirects is not None:
+            follow_redirects = allow_redirects
+        if proxy is None and proxies is not None:
+            proxy = proxies
+
+        sem = (
+            threading.BoundedSemaphore(concurrency)
+            if concurrency and concurrency > 0
+            else self._semaphore
+        )
+
+        if sem is not None:
+            with sem:
+                return self._do_request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    body=body,
+                    json=json,
+                    form=form,
+                    files=files,
+                    timeout=timeout,
+                    proxy=proxy,
+                    retries=retries,
+                    max_response_size=max_response_size,
+                    max_redirects=max_redirects,
+                    follow_redirects=follow_redirects,
+                    ssrf_protection=ssrf_protection,
+                    decompress=decompress,
+                )
+
+        return self._do_request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            body=body,
+            json=json,
+            form=form,
+            files=files,
+            timeout=timeout,
+            proxy=proxy,
+            retries=retries,
+            max_response_size=max_response_size,
+            max_redirects=max_redirects,
+            follow_redirects=follow_redirects,
+            ssrf_protection=ssrf_protection,
+            decompress=decompress,
+        )
+
+    def _do_request(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        body: Union[str, bytes, None] = None,
+        json: Any = None,
+        form: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
+        timeout: Union[float, Dict[str, float], None] = None,
+        proxy: Union[str, ProxyConfig, dict, bool, None] = None,
+        retries: Union[bool, RetryPolicy, dict, None] = None,
+        max_response_size: Optional[int] = None,
+        max_redirects: Optional[int] = None,
+        follow_redirects: Optional[bool] = None,
+        ssrf_protection: Optional[bool] = None,
+        decompress: bool = True,
+    ) -> RisuResponse:
         norm_method = method.upper()
         target_url = validate_url(url, self.base_url)
 
@@ -262,9 +388,12 @@ class RisuClient:
             "Accept-Encoding": "gzip, deflate, br",
             "User-Agent": "risu-req/1.0.0",
         }
-        merged_headers.update(self.default_headers)
-        if headers:
-            merged_headers.update(headers)
+        for src in (self.default_headers, headers or {}):
+            for k, v in src.items():
+                for existing_k in list(merged_headers.keys()):
+                    if existing_k.lower() == k.lower():
+                        del merged_headers[existing_k]
+                merged_headers[k] = str(v)
 
         payload_bytes: Optional[bytes] = None
         fields_data: Optional[Dict[str, Any]] = None
@@ -315,6 +444,7 @@ class RisuClient:
 
         attempt = 0
         max_attempts = active_retries.max_retries if active_retries else 0
+        replayable = is_replayable_body(body)
 
         while True:
             attempt += 1
@@ -334,6 +464,7 @@ class RisuClient:
             current_headers = dict(merged_headers)
             current_method = norm_method
             redirect_count = 0
+            visited_urls = {current_url}
 
             try:
                 while True:
@@ -344,7 +475,14 @@ class RisuClient:
                     if self.cookie_jar:
                         cookie_hdr = self.cookie_jar.get_cookie_string(current_url)
                         if cookie_hdr:
-                            current_headers["Cookie"] = cookie_hdr
+                            existing_cookie = None
+                            for k in list(current_headers.keys()):
+                                if k.lower() == "cookie":
+                                    existing_cookie = current_headers.pop(k)
+                            if existing_cookie:
+                                current_headers["Cookie"] = f"{existing_cookie}; {cookie_hdr}"
+                            else:
+                                current_headers["Cookie"] = cookie_hdr
 
                     active_proxy: Optional[ProxyConfig] = None
                     if proxy is not False:
@@ -397,6 +535,11 @@ class RisuClient:
                     )
 
                     if should_follow and is_redirect:
+                        try:
+                            resp.drain_conn()
+                        except Exception:
+                            pass
+                        resp.release_conn()
                         redirect_count += 1
                         if redirect_count > redirect_limit:
                             raise MaxRedirectsError(
@@ -408,6 +551,15 @@ class RisuClient:
 
                         raw_location = resp_headers["location"]
                         next_url = validate_url(raw_location, current_url)
+
+                        if next_url in visited_urls:
+                            raise MaxRedirectsError(
+                                f"Redirect cycle detected: {next_url}",
+                                redirect_count=redirect_count,
+                                url=next_url,
+                                method=current_method,
+                            )
+                        visited_urls.add(next_url)
 
                         if enforce_ssrf:
                             next_host = urllib.parse.urlparse(next_url).hostname or ""
@@ -427,10 +579,11 @@ class RisuClient:
                             current_headers.pop("content-type", None)
 
                         current_url = next_url
-                        resp.release_conn()
                         continue
 
                     duration_ms = (time.time() - start_time) * 1000
+                    rate_limit_info = parse_rate_limit_headers(resp_headers, resp.status)
+
                     if "on_response" in self.logging:
                         self.logging["on_response"](
                             {
@@ -440,6 +593,7 @@ class RisuClient:
                                 "reason": resp.reason or "",
                                 "headers": redact_headers_for_logging(resp_headers),
                                 "duration_ms": duration_ms,
+                                "rate_limit": rate_limit_info,
                             }
                         )
 
@@ -448,6 +602,7 @@ class RisuClient:
                         and attempt <= max_attempts
                         and is_retryable_method(norm_method, active_retries)
                         and is_retryable_status_code(resp.status, active_retries)
+                        and replayable
                     ):
                         retry_after_hdr = resp_headers.get("retry-after")
                         delay = calculate_retry_delay(
@@ -463,9 +618,14 @@ class RisuClient:
                                     "max_retries": max_attempts,
                                     "delay_seconds": delay,
                                     "reason": f"Status code {resp.status}",
+                                    "rate_limit": rate_limit_info,
                                 }
                             )
 
+                        try:
+                            resp.drain_conn()
+                        except Exception:
+                            pass
                         resp.release_conn()
                         time.sleep(delay)
                         break
@@ -479,6 +639,11 @@ class RisuClient:
                         max_response_size=effective_max_size,
                         decompress=decompress,
                         method=current_method,
+                        redirect_hops=redirect_count,
+                        authenticated=any(k.lower() == "authorization" for k in current_headers),
+                        cookies_sent=any(k.lower() == "cookie" for k in current_headers),
+                        release_conn=resp.release_conn,
+                        resp_obj=resp,
                     )
                     return risu_response
 
@@ -499,6 +664,7 @@ class RisuClient:
                     and attempt <= max_attempts
                     and is_retryable_method(norm_method, active_retries)
                     and is_retryable_exception(err)
+                    and replayable
                 ):
                     delay = calculate_retry_delay(attempt, active_retries)
                     if "on_retry" in self.logging:
