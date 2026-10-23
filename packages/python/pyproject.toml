@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "risu-req"
+version = "1.0.0"
+description = "Production-grade HTTP client library for Python with connection pooling, cookie jar, proxy tunneling, and resilient retries."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "risu-req contributors" }
+]
+keywords = [
+    "http",
+    "https",
+    "http-client",
+    "request",
+    "connection-pool",
+    "proxy",
+    "cookie-jar",
+    "ssrf-protection",
+    "retry"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "urllib3>=2.0.0"
+]
+
+[project.optional-dependencies]
+brotli = [
+    "brotli>=1.0.9"
+]
+test = [
+    "pytest>=8.0.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["risu_req*"]

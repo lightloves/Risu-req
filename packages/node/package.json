@@ -1,0 +1,47 @@
+{
+  "name": "risu-req",
+  "version": "1.0.0",
+  "description": "Production-grade, zero-dependency HTTP client library for Node.js with connection pooling, cookie jar, proxy tunneling, and resilient retries.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:esm": "tsc",
+    "build:cjs": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs --packages=external",
+    "build": "npm run build:esm && npm run build:cjs",
+    "test": "node --test test/**/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "http",
+    "https",
+    "http-client",
+    "request",
+    "connection-pool",
+    "proxy",
+    "cookie-jar",
+    "ssrf-protection",
+    "retry"
+  ],
+  "author": "risu-req contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.8.3"
+  }
+}

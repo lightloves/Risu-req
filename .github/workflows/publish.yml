@@ -1,0 +1,81 @@
+name: Publish Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (validate without publishing)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate-and-publish-node:
+    name: Publish Node Package (risu-req)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install and Build
+        working-directory: packages/node
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Validate Package Archive
+        working-directory: packages/node
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event.inputs.dry_run != 'true' && github.event_name == 'release' }}
+        working-directory: packages/node
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  validate-and-publish-python:
+    name: Publish Python Distribution (risu-req)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build and validation tools
+        run: pip install --upgrade pip build twine pytest
+
+      - name: Test
+        run: PYTHONPATH=packages/python pytest packages/python/tests -v
+
+      - name: Build Distributions
+        working-directory: packages/python
+        run: python -m build
+
+      - name: Check Artifacts with Twine
+        working-directory: packages/python
+        run: twine check dist/*
+
+      - name: Publish to PyPI via Trusted Publishing
+        if: ${{ github.event.inputs.dry_run != 'true' && github.event_name == 'release' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/python/dist/
