@@ -8,24 +8,17 @@ const SENSITIVE_HEADER_NAMES = new Set([
   "x-api-key",
   "api-key",
   "x-auth-token",
-  "bearer",
-  "token",
-  "x-access-token",
-  "x-secret-key",
-  "client-secret",
 ]);
 
 const SENSITIVE_PARAM_NAMES = new Set([
   "token",
   "secret",
   "password",
-  "passwd",
   "api_key",
   "apikey",
   "key",
   "access_token",
   "auth",
-  "client_secret",
 ]);
 
 export function validateHeader(name: string, value: string): void {
@@ -58,19 +51,7 @@ export function sanitizeRedirectHeaders(
 
   const result: Record<string, string> = { ...headers };
 
-  // A redirect from HTTP to HTTPS on the same host (same hostname and standard or matching ports)
-  // is a secure TLS upgrade, preserving authorized credentials just like curl and standard clients.
-  const isSameHost = fromUrl.hostname.toLowerCase() === toUrl.hostname.toLowerCase();
-  const isHttpsUpgrade = fromUrl.protocol === "http:" && toUrl.protocol === "https:";
-  const fromPort = fromUrl.port || (fromUrl.protocol === "https:" ? "443" : "80");
-  const toPort = toUrl.port || (toUrl.protocol === "https:" ? "443" : "80");
-  const isPortCompatible = isHttpsUpgrade
-    ? (fromPort === "80" && toPort === "443") || fromPort === toPort
-    : fromPort === toPort;
-
-  const isCrossDomain = !isSameHost || (!isHttpsUpgrade && fromUrl.origin !== toUrl.origin) || !isPortCompatible;
-
-  if (isCrossDomain) {
+  if (fromUrl.origin !== toUrl.origin) {
     delete result["authorization"];
     delete result["Authorization"];
     delete result["proxy-authorization"];

@@ -30,7 +30,7 @@ from risu_req.retry import RateLimitInfo, RetryPolicy
 
 Session = RisuClient
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = [
     "RisuClient",

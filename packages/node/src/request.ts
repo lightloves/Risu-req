@@ -29,10 +29,9 @@ import {
   isRetryableMethod,
   isRetryableStatusCode,
   isRetryableError,
-  isReplayableBody,
 } from "./retry.js";
 import { RisuResponse } from "./response.js";
-import { Semaphore, type ConnectionPool } from "./pool.js";
+import type { ConnectionPool } from "./pool.js";
 import type {
   ClientOptions,
   RequestOptions,
@@ -244,8 +243,7 @@ export async function executeSingleHttpCall(
   body: PreparedBody | null,
   clientOptions: ClientOptions,
   requestOptions: RequestOptions,
-  pool: ConnectionPool,
-  redirectCount = 0
+  pool: ConnectionPool
 ): Promise<RisuResponse> {
   const timeouts = parseTimeouts(clientOptions.timeout, requestOptions.timeout);
   const enableSsrf = requestOptions.ssrfProtection ?? clientOptions.ssrfProtection ?? false;
@@ -327,11 +325,6 @@ export async function executeSingleHttpCall(
       if (totalTimeoutTimer) clearTimeout(totalTimeoutTimer);
       if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
       if (readTimeoutTimer) clearTimeout(readTimeoutTimer);
-      try {
-        req.setTimeout(0);
-      } catch {
-        // ignore
-      }
     };
 
     const abortHandler = () => {
@@ -401,10 +394,6 @@ export async function executeSingleHttpCall(
         rawStream: incomingMsg,
         maxResponseSize: requestOptions.maxResponseSize ?? clientOptions.maxResponseSize,
         decompress: requestOptions.decompress ?? true,
-        method,
-        redirectHops: redirectCount,
-        authenticated: Boolean(headers["authorization"]),
-        cookiesSent: Boolean(headers["cookie"]),
       });
 
       resolve(risuRes);
@@ -497,195 +486,128 @@ export async function executeRequestPipeline(
   pool: ConnectionPool,
   cookieJar?: CookieJarLike
 ): Promise<RisuResponse> {
-  const concurrencyLimit = options.concurrency ?? clientOptions.concurrency;
-  const semaphore = pool.semaphore ?? (concurrencyLimit && concurrencyLimit > 0 ? new Semaphore(concurrencyLimit) : undefined);
-  const releaseSlot = semaphore ? await semaphore.acquire() : () => {};
+  const method = (options.method ?? "GET").toUpperCase();
+  let currentUrl = validateAndParseUrl(urlInput, clientOptions.baseUrl);
+  const queryParams = options.params ?? options.query;
+  currentUrl = appendQueryParams(currentUrl, queryParams);
 
-  try {
-    const method = (options.method ?? "GET").toUpperCase();
-    let currentUrl = validateAndParseUrl(urlInput, clientOptions.baseUrl);
-    const queryParams = options.params ?? options.query;
-    currentUrl = appendQueryParams(currentUrl, queryParams);
+  const followRedirects = options.followRedirects ?? clientOptions.followRedirects ?? true;
+  const maxRedirects = options.maxRedirects ?? clientOptions.maxRedirects ?? 10;
+  const retryPolicy = normalizeRetryOptions(options.retries ?? clientOptions.retries);
+  const enableSsrf = options.ssrfProtection ?? clientOptions.ssrfProtection ?? false;
 
-    const followRedirects = options.followRedirects ?? clientOptions.followRedirects ?? true;
-    const maxRedirects = options.maxRedirects ?? clientOptions.maxRedirects ?? 10;
-    const retryPolicy = normalizeRetryOptions(options.retries ?? clientOptions.retries);
-    const enableSsrf = options.ssrfProtection ?? clientOptions.ssrfProtection ?? false;
+  const mergedHeaders: Record<string, string> = {
+    accept: "*/*",
+    "accept-encoding": "gzip, deflate, br",
+    "user-agent": "risu-req/1.0.0",
+    ...normalizeHeadersInit(clientOptions.headers),
+    ...normalizeHeadersInit(options.headers),
+  };
 
-    const userHeaders = {
-      ...normalizeHeadersInit(clientOptions.headers),
-      ...normalizeHeadersInit(options.headers),
-    };
+  const body = prepareBody(options);
+  if (body) {
+    for (const [k, v] of Object.entries(body.headers)) {
+      if (!mergedHeaders[k.toLowerCase()]) {
+        mergedHeaders[k.toLowerCase()] = v;
+      }
+    }
+  }
 
-    const mergedHeaders: Record<string, string> = {
-      accept: "*/*",
-      "accept-encoding": "gzip, deflate, br",
-      "user-agent": "risu-req/1.0.0",
-      ...userHeaders,
-    };
+  for (const [name, val] of Object.entries(mergedHeaders)) {
+    validateHeader(name, val);
+  }
 
-    let attempt = 0;
-    const maxRetries = retryPolicy?.maxRetries ?? 0;
+  let attempt = 0;
+  const maxRetries = retryPolicy?.maxRetries ?? 0;
 
-    while (true) {
-      attempt++;
-      const startTime = Date.now();
+  while (true) {
+    attempt++;
+    const startTime = Date.now();
 
-      const activeBody = prepareBody(options);
-      if (activeBody) {
-        for (const [k, v] of Object.entries(activeBody.headers)) {
-          if (!mergedHeaders[k.toLowerCase()]) {
-            mergedHeaders[k.toLowerCase()] = v;
+    if (clientOptions.logging?.onRequest) {
+      clientOptions.logging.onRequest({
+        method,
+        url: redactUrlForLogging(currentUrl),
+        headers: redactHeadersForLogging(mergedHeaders),
+        hasBody: body !== null,
+      });
+    }
+
+    let redirectCount = 0;
+    let activeUrl = new URL(currentUrl.toString());
+    let activeHeaders = { ...mergedHeaders };
+    let activeMethod = method;
+
+    try {
+      while (true) {
+        if (cookieJar) {
+          const cookieStr = cookieJar.getCookieString(activeUrl);
+          if (cookieStr) {
+            activeHeaders["cookie"] = cookieStr;
           }
         }
-      }
 
-      for (const [name, val] of Object.entries(mergedHeaders)) {
-        validateHeader(name, val);
-      }
+        const response = await executeSingleHttpCall(
+          activeUrl,
+          activeMethod,
+          activeHeaders,
+          activeMethod === method ? body : null,
+          clientOptions,
+          options,
+          pool
+        );
 
-      if (clientOptions.logging?.onRequest) {
-        clientOptions.logging.onRequest({
-          method,
-          url: redactUrlForLogging(currentUrl),
-          headers: redactHeadersForLogging(mergedHeaders),
-          hasBody: activeBody !== null,
-        });
-      }
+        if (cookieJar) {
+          const setCookieHeaders = response.rawHeaders
+            .map((header, index) => (index % 2 === 0 && header.toLowerCase() === "set-cookie" ? response.rawHeaders[index + 1] : null))
+            .filter((val): val is string => val !== null);
 
-      let redirectCount = 0;
-      let activeUrl = new URL(currentUrl.toString());
-      let activeHeaders = { ...mergedHeaders };
-      let activeMethod = method;
-      const visitedUrls = new Set<string>([activeUrl.toString()]);
-
-      try {
-        while (true) {
-          if (cookieJar) {
-            const cookieStr = cookieJar.getCookieString(activeUrl);
-            if (cookieStr) {
-              activeHeaders["cookie"] = activeHeaders["cookie"]
-                ? `${activeHeaders["cookie"]}; ${cookieStr}`
-                : cookieStr;
-            }
+          if (setCookieHeaders.length > 0) {
+            cookieJar.setCookies(setCookieHeaders, activeUrl);
           }
+        }
 
-          const response = await executeSingleHttpCall(
-            activeUrl,
-            activeMethod,
-            activeHeaders,
-            activeMethod === method ? activeBody : null,
-            clientOptions,
-            options,
-            pool,
-            redirectCount
-          );
+        const isRedirect =
+          [301, 302, 303, 307, 308].includes(response.statusCode) &&
+          response.headers["location"] !== undefined;
 
-          if (cookieJar) {
-            const setCookieHeaders = response.rawHeaders
-              .map((header, index) => (index % 2 === 0 && header.toLowerCase() === "set-cookie" ? response.rawHeaders[index + 1] : null))
-              .filter((val): val is string => val !== null);
-
-            if (setCookieHeaders.length > 0) {
-              cookieJar.setCookies(setCookieHeaders, activeUrl);
-            }
-          }
-
-          const isRedirect =
-            [301, 302, 303, 307, 308].includes(response.statusCode) &&
-            response.headers["location"] !== undefined;
-
-          if (followRedirects && isRedirect) {
-            await response.drain();
-            redirectCount++;
-            if (redirectCount > maxRedirects) {
-              throw new MaxRedirectsError(
-                `Maximum redirect limit of ${maxRedirects} exceeded`,
-                redirectCount,
-                { url: activeUrl.toString(), method: activeMethod }
-              );
-            }
-
-            const rawLocation = response.headers["location"]!;
-            const nextUrl = validateAndParseUrl(rawLocation, activeUrl.toString());
-
-            if (visitedUrls.has(nextUrl.toString())) {
-              throw new MaxRedirectsError(
-                `Redirect cycle detected at ${nextUrl.toString()}`,
-                redirectCount,
-                { url: nextUrl.toString(), method: activeMethod }
-              );
-            }
-            visitedUrls.add(nextUrl.toString());
-
-            if (enableSsrf) {
-              await verifySsrfSafety(nextUrl.hostname);
-            }
-
-            activeHeaders = sanitizeRedirectHeaders(activeHeaders, activeUrl, nextUrl);
-
-            if (response.statusCode === 303 || ((response.statusCode === 301 || response.statusCode === 302) && activeMethod === "POST")) {
-              activeMethod = "GET";
-              delete activeHeaders["content-length"];
-              delete activeHeaders["content-type"];
-            }
-
-            activeUrl = nextUrl;
-            continue;
-          }
-
-          const durationMs = Date.now() - startTime;
-          if (clientOptions.logging?.onResponse) {
-            clientOptions.logging.onResponse({
-              method: activeMethod,
-              url: redactUrlForLogging(activeUrl),
-              statusCode: response.statusCode,
-              statusText: response.statusText,
-              headers: redactHeadersForLogging(response.headers),
-              durationMs,
-              rateLimit: response.rateLimit,
-            });
-          }
-
-          if (
-            retryPolicy &&
-            attempt <= maxRetries &&
-            isRetryableMethod(method, retryPolicy) &&
-            isRetryableStatusCode(response.statusCode, retryPolicy) &&
-            isReplayableBody(options.body)
-          ) {
-            const delayMs = calculateRetryDelay(
-              attempt,
-              retryPolicy,
-              response.headers["retry-after"]
+        if (followRedirects && isRedirect) {
+          redirectCount++;
+          if (redirectCount > maxRedirects) {
+            throw new MaxRedirectsError(
+              `Maximum redirect limit of ${maxRedirects} exceeded`,
+              redirectCount,
+              { url: activeUrl.toString(), method: activeMethod }
             );
-
-            if (clientOptions.logging?.onRetry) {
-              clientOptions.logging.onRetry({
-                method,
-                url: redactUrlForLogging(currentUrl),
-                attempt,
-                maxRetries,
-                delayMs,
-                reason: `Status code ${response.statusCode}`,
-                rateLimit: response.rateLimit,
-              });
-            }
-
-            await response.drain();
-            await new Promise((res) => setTimeout(res, delayMs));
-            break;
           }
 
-          return response;
+          const rawLocation = response.headers["location"]!;
+          const nextUrl = validateAndParseUrl(rawLocation, activeUrl.toString());
+
+          if (enableSsrf) {
+            await verifySsrfSafety(nextUrl.hostname);
+          }
+
+          activeHeaders = sanitizeRedirectHeaders(activeHeaders, activeUrl, nextUrl);
+
+          if (response.statusCode === 303 || ((response.statusCode === 301 || response.statusCode === 302) && activeMethod === "POST")) {
+            activeMethod = "GET";
+            delete activeHeaders["content-length"];
+            delete activeHeaders["content-type"];
+          }
+
+          activeUrl = nextUrl;
+          continue;
         }
-      } catch (error) {
+
         const durationMs = Date.now() - startTime;
-        if (clientOptions.logging?.onError && error instanceof Error) {
-          clientOptions.logging.onError({
-            method,
-            url: redactUrlForLogging(currentUrl),
-            error,
+        if (clientOptions.logging?.onResponse) {
+          clientOptions.logging.onResponse({
+            method: activeMethod,
+            url: redactUrlForLogging(activeUrl),
+            statusCode: response.statusCode,
+            statusText: response.statusText,
+            headers: redactHeadersForLogging(response.headers),
             durationMs,
           });
         }
@@ -694,10 +616,13 @@ export async function executeRequestPipeline(
           retryPolicy &&
           attempt <= maxRetries &&
           isRetryableMethod(method, retryPolicy) &&
-          isRetryableError(error) &&
-          isReplayableBody(options.body)
+          isRetryableStatusCode(response.statusCode, retryPolicy)
         ) {
-          const delayMs = calculateRetryDelay(attempt, retryPolicy);
+          const delayMs = calculateRetryDelay(
+            attempt,
+            retryPolicy,
+            response.headers["retry-after"]
+          );
 
           if (clientOptions.logging?.onRetry) {
             clientOptions.logging.onRetry({
@@ -706,18 +631,51 @@ export async function executeRequestPipeline(
               attempt,
               maxRetries,
               delayMs,
-              reason: error instanceof Error ? error.message : String(error),
+              reason: `Status code ${response.statusCode}`,
             });
           }
 
           await new Promise((res) => setTimeout(res, delayMs));
-          continue;
+          break;
         }
 
-        throw error;
+        return response;
       }
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      if (clientOptions.logging?.onError && error instanceof Error) {
+        clientOptions.logging.onError({
+          method,
+          url: redactUrlForLogging(currentUrl),
+          error,
+          durationMs,
+        });
+      }
+
+      if (
+        retryPolicy &&
+        attempt <= maxRetries &&
+        isRetryableMethod(method, retryPolicy) &&
+        isRetryableError(error)
+      ) {
+        const delayMs = calculateRetryDelay(attempt, retryPolicy);
+
+        if (clientOptions.logging?.onRetry) {
+          clientOptions.logging.onRetry({
+            method,
+            url: redactUrlForLogging(currentUrl),
+            attempt,
+            maxRetries,
+            delayMs,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        await new Promise((res) => setTimeout(res, delayMs));
+        continue;
+      }
+
+      throw error;
     }
-  } finally {
-    releaseSlot();
   }
 }

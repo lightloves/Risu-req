@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "risu-req"
-version = "1.0.0"
+name = "risureq"
+version = "1.0.1"
 description = "Production-grade HTTP client library for Python with connection pooling, cookie jar, proxy tunneling, and resilient retries."
 readme = "README.md"
 requires-python = ">=3.10"
